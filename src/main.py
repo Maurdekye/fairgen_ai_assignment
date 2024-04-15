@@ -297,7 +297,3 @@ async def rooms_delete(current_user: Annotated[User, Depends(get_current_user)],
     
     delete_time(time.id)
     return { "success": True }
-
-# potential enhancements:
-# * allow deletion of a range of times between a start and end time
-# * allow variadic specification of fields to modify in `update` requests
