@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Optional
 
 from fastapi import HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from database import collection, database, fetch, find
 
@@ -18,7 +18,7 @@ class UserGroup(str, Enum):
 class UserData(BaseModel):
     username: str
     group: UserGroup
-    university: Optional[str]
+    university: Optional[str] = Field(example="university-id", default=None)
 
 class User(UserData):
     id: str
@@ -86,7 +86,7 @@ def delete_university(university_id: str, save: bool = True):
 ## room
 
 class RoomData(BaseModel):
-    university: str
+    university: str = Field(example="university-id")
     name: str
 
 class Room(RoomData):
@@ -121,10 +121,10 @@ class TimeData(BaseModel):
     end: datetime
 
 class RoomTimeData(TimeData):
-    room: str
+    room: str = Field(example="room-id")
 
 class Time(RoomTimeData):
-    registrant: str
+    registrant: str = Field(example="user-id")
     id: str
 
 def overlaps_with(self: Time, other: Time):

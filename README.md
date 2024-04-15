@@ -125,6 +125,7 @@ This is a fairly minimal implementation of the requirements specified, with plen
 * Separation of user information updating and password updating operations into separate endpoints.
 * Allow the deletion of a range of times between a start and end time.
 * Allow variadic specification of fields to modify in `update` requests, as opposed to requiring all of them.
+* Implement 'disabled' status for deleted users instead of simply deleting their user entries from the database.
 * Websocket events for real-time updates to registered times, sent to clients dynamically
 
 As a final disclaimer: I did use the assistance of LLMS to investigate and choose the tooling and architecture for this project. However, all of the code and language written here in this project and this readme file is my own, or lightly modified from the fastapi documentation (in particular with respect to user authentication). 
