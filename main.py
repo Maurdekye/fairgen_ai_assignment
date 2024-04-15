@@ -28,20 +28,47 @@ app = FastAPI()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
+# data model
+
 class UserGroup(str, Enum):
     ADMIN = "admin"
     MANAGER = "manager"
     PERSONNEL = "personnel"
     USER = "user"
 
-class User(BaseModel):
-    id: str
+class UserData(BaseModel):
     username: str
     group: UserGroup
     university: Union[str, None]
 
+class User(UserData):
+    id: str
+
 class UserPassword(User):
     hashed_password: str
+
+class UniversityData(BaseModel):
+    name: str
+
+class University(UniversityData):
+    id: str
+
+class RoomData(BaseModel):
+    university_id: str
+    name: str
+
+class Room(RoomData):
+    id: str
+
+class TimeData(BaseModel):
+    room_id: str
+    start: datetime
+    end: datetime
+
+class Time(TimeData):
+    id: str
+
+# user authentication
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
@@ -83,7 +110,7 @@ async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
     access_token = jwt.encode({"exp": expire, "sub": user.id }, secret_key, algorithm=jwt_algorithm)
     return { "access_token": access_token, "token_type": "bearer" }
 
-@app.get("/users/me")
+@app.get("/user/me")
 async def read_users_me(current_user: Annotated[User, Depends(get_current_user)]):
     return current_user
 
@@ -93,3 +120,81 @@ class HashForm(BaseModel):
 @app.post("/hash")
 async def hash(hash_form: HashForm):
     return { "hashed_password": hash_password(hash_form.password) }
+
+# CRUD operations
+
+## user
+
+class NewUser(UserData):
+    password: str
+    password_confirmation: str
+
+@app.post("/users/create")
+async def users_create(current_user: Annotated[User, Depends(get_current_user)], new_user: NewUser):
+    pass
+
+@app.get("/users/list")
+async def users_list(current_user: Annotated[User, Depends(get_current_user)]):
+    pass
+
+@app.post("/users/update")
+async def users_update(current_user: Annotated[User, Depends(get_current_user)], user_id: str, user_data: NewUser):
+    pass
+
+@app.post("/users/delete")
+async def users_delete(current_user: Annotated[User, Depends(get_current_user)], user_id: str):
+    pass
+
+## universities
+
+@app.post("/universities/create")
+async def universities_create(current_user: Annotated[User, Depends(get_current_user)], new_university: UniversityData):
+    pass
+
+@app.post("/universities/list")
+async def universities_list(current_user: Annotated[User, Depends(get_current_user)]):
+    pass
+
+@app.post("/universities/update")
+async def universities_update(current_user: Annotated[User, Depends(get_current_user)], university_id: str, university_data: UniversityData):
+    pass
+
+@app.post("/universities/delete")
+async def universities_delete(current_user: Annotated[User, Depends(get_current_user)], university_id: str):
+    pass
+
+## rooms
+
+@app.post("/rooms/create")
+async def rooms_create(current_user: Annotated[User, Depends(get_current_user)], new_room: RoomData):
+    pass
+
+@app.post("/rooms/list")
+async def rooms_list(current_user: Annotated[User, Depends(get_current_user)]):
+    pass
+
+@app.post("/rooms/update")
+async def rooms_update(current_user: Annotated[User, Depends(get_current_user)], room_id: str, room_data: RoomData):
+    pass
+
+@app.post("/rooms/delete")
+async def rooms_delete(current_user: Annotated[User, Depends(get_current_user)], room_id: str):
+    pass
+
+## times
+
+@app.post("/times/create")
+async def times_create(current_user: Annotated[User, Depends(get_current_user)], new_time: TimeData):
+    pass
+
+@app.post("/times/list")
+async def times_list(current_user: Annotated[User, Depends(get_current_user)], room_id: str):
+    pass
+
+@app.post("/times/update")
+async def times_update(current_user: Annotated[User, Depends(get_current_user)], time_id: str, time_data: TimeData):
+    pass
+
+@app.post("/times/delete")
+async def rooms_delete(current_user: Annotated[User, Depends(get_current_user)], time_id: str):
+    pass
