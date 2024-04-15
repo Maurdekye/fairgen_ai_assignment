@@ -26,9 +26,11 @@ async def read_users_me(current_user: Annotated[User, Depends(get_current_user)]
 class HashForm(BaseModel):
     password: str
 
+# this is a bit of a hacky workaround to bootstrap creating an initial user account, 
+# but other solutions involve much more in-depth work
 @app.post("/hash")
 async def hash(hash_form: HashForm):
-    database.save()
+    database.save() # save the empty database so it can be modified by the user
     return { "hashed_password": hash_password(hash_form.password) }
 
 # CRUD operations

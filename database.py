@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from simplejsondb import Database
 
-database = Database("database.json", default={
+database = Database("app_data/database.json", default={
     "users": {},
     "universities": {},
     "rooms": {},
