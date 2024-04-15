@@ -1,214 +1,23 @@
-from datetime import datetime, timedelta, timezone
 from uuid import uuid4
-from enum import Enum
-from typing import Annotated, Optional, Union
+from typing import Annotated, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
-from jose import JWTError, jwt
-from passlib.context import CryptContext
 
-from simplejsondb import Database
-
-database = Database("database.json", default={
-    "users": {},
-    "universities": {},
-    "rooms": {},
-    "times": {},
-})
-
-def collection(collection: str):
-    return database.data.get(collection) or {}
-
-def fetch(collection_name: str, key: str):
-    return collection(collection_name).get(key)
-
-def find(collection_name: str, predicate):
-    return next((item for item in collection(collection_name).values() if predicate(item)), None)
-
-def insert(collection_name: str, key: str, value: BaseModel):
-    if collection_name not in database.data:
-        database.data[collection_name] = {}
-    database.data[collection_name][key] = value.model_dump(mode='json')
-    database.save()
-
-secret_key = "CHANGEME_7ca47b62f5463f69baddaeed7e528cd1b58cc121783c718a5096186a06e7b08c"
-token_expire = 30
-jwt_algorithm = "HS256"
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+from model import Room, RoomData, RoomTimeData, Time, TimeData, University, UniversityData, User, UserData, UserGroup, UserPassword, assert_user_by_id, fetch_owned_room, fetch_owned_time, validate_room, validate_time, validate_university, validate_user
+from authorization import get_access_token, get_current_user, hash_password
+from database import collection, database, insert
 
 app = FastAPI()
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
 unauthorized = HTTPException(status_code=401, detail="Unauthorized")
 
-# data model
-
-## user
-
-class UserGroup(str, Enum):
-    ADMIN = "admin"
-    MANAGER = "manager"
-    PERSONNEL = "personnel"
-    USER = "user"
-
-class UserData(BaseModel):
-    username: str
-    group: UserGroup
-    university: Optional[str]
-
-class User(UserData):
-    id: str
-
-class UserPassword(User):
-    hashed_password: str
-
-def get_user_by_id(id: str):
-    user_dict = fetch("users", id)
-    if user_dict is not None:
-        return User(**user_dict)
-    
-def assert_user_by_id(id: str):
-    user = get_user_by_id(id)
-    if user is None:
-        raise HTTPException(status_code=400, detail=f"No user with the id '{id}' found") 
-    return user
-
-# potential improvement: increase the efficiency of this operation with a secondary index
-def get_user_by_name(username: str):
-    return find("users", lambda u: u["username"] == username)
-    
-def validate_user(user: User):
-    existing_user_same_name = find("users", lambda u: u["username"] == user.username and u["id"] != user.id)
-    if existing_user_same_name is not None:
-        raise HTTPException(status_code=400, detail=f"User with name '{user.username}' already exists")
-    if user.group != UserGroup.ADMIN and fetch("universities", user.university) is None:
-        raise HTTPException(status_code=400, detail=f"Users of group '{user.group}' must be associated with an existing university")
-    elif user.group == UserGroup.ADMIN and user.university is not None:
-        raise HTTPException(status_code=400, detail=f"Admin users cannot be associated with a university")
-
-## university
-
-class UniversityData(BaseModel):
-    name: str
-
-class University(UniversityData):
-    id: str
-
-# potential improvement: increase the efficiency of this operation with a secondary index
-def get_university_by_name(name: str):
-    return find("universities", lambda u: u["name"] == name)
-
-def validate_university(university: University):
-    existing_university_same_name = find("universities", lambda u: u["name"] == university.name and u["id"] != university.id)
-    if existing_university_same_name is not None:
-        raise HTTPException(status_code=400, detail=f"University with name '{university.name}' already exists")
-
-## room
-
-class RoomData(BaseModel):
-    university: str
-    name: str
-
-class Room(RoomData):
-    id: str
-
-def validate_room(room: Room):
-    existing_room_same_name = find("rooms", lambda r: r["name"] == room.name and r["university"] == room.university and r["id"] != room.id)
-    if existing_room_same_name is not None:
-        raise HTTPException(status_code=400, detail=f"Room with name '{room.name}' already exists")
-    university = fetch("universities", room.university)
-    if university is None:
-        raise HTTPException(status_code=400, detail=f"University with id '{room.university}' does not exist")
-
-def fetch_owned_room(user: User, id: str):
-    room = fetch("rooms", id)
-    if room is None or (user.group != UserGroup.ADMIN and user.university != room.get("university")):
-        raise HTTPException(status_code=400, detail=f"No room with the id '{id}' found")
-    return Room(**room)
-
-## time
-
-class TimeData(BaseModel):
-    start: datetime
-    end: datetime
-
-class RoomTimeData(TimeData):
-    room: str
-
-class Time(RoomTimeData):
-    registrant: str
-    id: str
-
-def overlaps_with(self: Time, other: Time):
-    if self.room != other.room:
-        return False
-    if self.start >= other.end:
-        return False
-    if self.end <= other.start:
-        return False
-    return True
-
-def validate_time(time: Time):
-    if time.start >= time.end:
-        raise HTTPException(status_code=400, detail=f"Start must not be later than end")
-    overlapping_time = find("times", lambda t: overlaps_with(time, Time(**t)))
-    if overlapping_time is not None:
-        overlapping_time = Time(**overlapping_time)
-        raise HTTPException(status_code=400, detail=f"Time overlaps with existing scheduled time: {overlapping_time.start} to {overlapping_time.end}")
-
-def fetch_owned_time(user: User, id: str):
-    nonexistent = HTTPException(status_code=400, detail=f"No time with the id '{id}' found")
-    time = fetch("times", id)
-    if time is None:
-        raise nonexistent
-    time = Time(**time)
-    room = fetch("rooms", time.room)
-    if user.group != UserGroup.ADMIN and user.university != room.get("university"):
-        raise nonexistent
-    return time
-
-# user authentication
-
-# note: bcrypt warning appears in console due to outdated bcrypt support in the
-# passlib package
-# `(trapped) error reading bcrypt version`
-# `AttributeError: module 'bcrypt' has no attribute '__about__'`
-# see https://github.com/pyca/bcrypt/issues/684 for relevant information
-def verify_password(plain_password: str, hashed_password: str):
-    return pwd_context.verify(plain_password, hashed_password)
-
-def hash_password(password: str):
-    return pwd_context.hash(password)
-
-async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
-    credentials_exception = HTTPException(status_code=400, detail="Invalid authentication credentials")
-    try:
-        payload = jwt.decode(token, secret_key, algorithms=[jwt_algorithm])
-        id: str = payload.get("sub")
-        if id is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
-    user = get_user_by_id(id)
-    if user is None:
-        raise credentials_exception
-    return user
+# authorization
 
 @app.post("/token")
 async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
-    user_dict = get_user_by_name(form_data.username)
-    if not user_dict:
-        raise HTTPException(status_code=400, detail="Incorrect username or password")
-    user = UserPassword(**user_dict)
-    if not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=400, detail="Incorrect username or password")
-    expire = datetime.now(timezone.utc) + timedelta(minutes=token_expire)
-    access_token = jwt.encode({"exp": expire, "sub": user.id }, secret_key, algorithm=jwt_algorithm)
-    return { "access_token": access_token, "token_type": "bearer" }
+    return get_access_token(form_data)
 
 @app.get("/users/me")
 async def read_users_me(current_user: Annotated[User, Depends(get_current_user)]):
