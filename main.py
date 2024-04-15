@@ -18,6 +18,10 @@ database = Database("database.json", default={
     "times": {},
 })
 
+def insert(collection: str, key: str, value: BaseModel):
+    database.data[collection][key] = value.model_dump()
+    database.save()
+
 secret_key = "CHANGEME_7ca47b62f5463f69baddaeed7e528cd1b58cc121783c718a5096186a06e7b08c"
 token_expire = 30
 jwt_algorithm = "HS256"
@@ -31,6 +35,8 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 unauthorized = HTTPException(status_code=401, detail="Unauthorized")
 
 # data model
+
+## user
 
 class UserGroup(str, Enum):
     ADMIN = "admin"
@@ -49,35 +55,6 @@ class User(UserData):
 class UserPassword(User):
     hashed_password: str
 
-class UniversityData(BaseModel):
-    name: str
-
-class University(UniversityData):
-    id: str
-
-class RoomData(BaseModel):
-    university_id: str
-    name: str
-
-class Room(RoomData):
-    id: str
-
-class TimeData(BaseModel):
-    room_id: str
-    start: datetime
-    end: datetime
-
-class Time(TimeData):
-    id: str
-
-# user authentication
-
-def verify_password(plain_password: str, hashed_password: str):
-    return pwd_context.verify(plain_password, hashed_password)
-
-def hash_password(password: str):
-    return pwd_context.hash(password)
-
 def get_user_by_id(id: str):
     user_dict = database.data["users"].get(id)
     if user_dict is not None:
@@ -89,13 +66,66 @@ def assert_user_by_id(id: str):
         raise HTTPException(status_code=400, detail=f"No user with the id '{id}' found") 
     return user
 
+# potential improvement: increase the efficiency of this operation with a secondary index
 def get_user_by_name(username: str):
     return next((u for u in database.data["users"].values() if u["username"] == username), None)
     
 def validate_user(user: User):
+    existing_user_same_name = next((u for u in database.data["users"].values() if u["username"] == user.username and u["id"] != user.id), None)
+    if existing_user_same_name is not None:
+        raise HTTPException(status_code=400, detail=f"User with name '{user.username}' already exists")
     if user.group != UserGroup.ADMIN:
         if not user.university in database.data["universities"]:
             raise HTTPException(status_code=400, detail=f"Users of group '{user.group}' must be associated with a university")
+
+## university
+
+class UniversityData(BaseModel):
+    name: str
+
+class University(UniversityData):
+    id: str
+
+# potential improvement: increase the efficiency of this operation with a secondary index
+def get_university_by_name(name: str):
+    return next((u for u in database.data["universities"].values() if u["name"] == name), None)
+
+def validate_university(university: University):
+    existing_university_same_name = next((u for u in database.data["universities"].values() if u["name"] == university.name and u["id"] != university.id), None)
+    if existing_university_same_name is not None:
+        raise HTTPException(status_code=400, detail=f"University with name '{university.name}' already exists")
+
+## room
+
+class RoomData(BaseModel):
+    university: str
+    name: str
+
+class Room(RoomData):
+    id: str
+
+## time
+
+class TimeData(BaseModel):
+    room: str
+    start: datetime
+    end: datetime
+
+class Time(TimeData):
+    id: str
+
+# user authentication
+
+# note: bcrypt warning appears in console due to outdated bcrypt support in the
+# passlib package
+# `(trapped) error reading bcrypt version`
+# `AttributeError: module 'bcrypt' has no attribute '__about__'`
+# see https://github.com/pyca/bcrypt/issues/684 for relevant information
+def verify_password(plain_password: str, hashed_password: str):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def hash_password(password: str):
+    return pwd_context.hash(password)
 
 async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
     credentials_exception = HTTPException(status_code=400, detail="Invalid authentication credentials")
@@ -138,6 +168,11 @@ async def hash(hash_form: HashForm):
 
 ## user
 
+def delete_user(id: str, save: bool = True):
+    del database.data["users"][id]
+    if save:
+      database.save()
+
 class NewUser(UserData):
     password: str
     password_confirmation: str
@@ -155,15 +190,11 @@ async def users_create(current_user: Annotated[User, Depends(get_current_user)],
         raise unauthorized
     if new_user.password != new_user.password_confirmation:
         raise HTTPException(status_code=400, detail="Passwords do not match")
-    existing_user = get_user_by_name(new_user.username)
-    if existing_user is not None:
-        raise HTTPException(status_code=400, detail=f"User with username '{new_user.username}' already exists")
 
     user_id = str(uuid4())
     user, database_user = create_user_from_new_user(user_id, new_user)
     validate_user(user)
-    database.data["users"][user_id] = database_user.model_dump()
-    database.save()
+    insert("users", user_id, database_user)
     return user
 
 @app.get("/users/list")
@@ -175,7 +206,7 @@ async def users_list(current_user: Annotated[User, Depends(get_current_user)]):
 
 class UserUpdate(BaseModel):
     id: str
-    user_data: NewUser
+    data: NewUser
 
 # profile updating & password changing are the same operation, 
 # for implementation simplicity (not the focus of the assignment)
@@ -189,8 +220,7 @@ async def users_update(current_user: Annotated[User, Depends(get_current_user)],
     
     user, database_user = create_user_from_new_user(update.id, update.user_data)
     validate_user(user)
-    database.data["users"][update.id] = database_user.model_dump()
-    database.save()
+    insert("users", update.id, database_user)
     return user
 
 class UserDelete(BaseModel):
@@ -204,43 +234,79 @@ async def users_delete(current_user: Annotated[User, Depends(get_current_user)],
         raise HTTPException(status_code=400, detail="Cannot delete your own user account")
     assert_user_by_id(delete.id)
     
-    del database.data["users"][delete.id]
-    database.save()
+    delete_user(delete.id)
     return { "success": True }
 
 ## universities
 
-def delete_university(id: str, save: bool = True):
-    del database.data["universities"][id]
-    to_delete = [id for id, room in database.data["rooms"] if room["university_id"] == id]
-    for id in to_delete:
-        delete_room(id, save=False)
+def delete_university(university_id: str, save: bool = True):
+    del database.data["universities"][university_id]
+    rooms = database.data.get("rooms") or {}
+    rooms_to_delete = [room_id for room_id, room in rooms.items() if room["university"] == university_id]
+    for room_id in rooms_to_delete:
+        delete_room(room_id, save=False)
+    users = database.data.get("users") or {}
+    users_to_delete = [user_id for user_id, user in users.items() if user["university"] == university_id]
+    for user_id in users_to_delete:
+        delete_user(user_id, save=False)
     if save:
       database.save()
 
 @app.post("/universities/create")
 async def universities_create(current_user: Annotated[User, Depends(get_current_user)], new_university: UniversityData):
-    pass
+    if current_user.group != UserGroup.ADMIN:
+        raise unauthorized
+    
+    id = str(uuid4())
+    university = University(id=id, **new_university.model_dump())
+    validate_university(university)
+    insert("universities", id, university)
+    return university
 
-@app.post("/universities/list")
+@app.get("/universities/list")
 async def universities_list(current_user: Annotated[User, Depends(get_current_user)]):
-    pass
+    if current_user.group != UserGroup.ADMIN:
+        raise unauthorized
+    
+    return [University(**university) for university in database.data["universities"].values()]
+
+class UniversityUpdate(BaseModel):
+    id: str
+    data: UniversityData
 
 @app.post("/universities/update")
-async def universities_update(current_user: Annotated[User, Depends(get_current_user)], university_id: str, university_data: UniversityData):
-    pass
+async def universities_update(current_user: Annotated[User, Depends(get_current_user)], update: UniversityUpdate):
+    if current_user.group != UserGroup.ADMIN:
+        raise unauthorized
+    if update.id not in database.data["universities"]:
+        raise HTTPException(status_code=400, detail=f"University with id '{update.id}' does not exist")
+    
+    university = University(id=update.id, **update.data.model_dump())
+    validate_university(university)
+    insert("universities", update.id, university)
+    return university
+
+class UniversityDelete(BaseModel):
+    id: str
 
 @app.post("/universities/delete")
-async def universities_delete(current_user: Annotated[User, Depends(get_current_user)], university_id: str):
-    pass
+async def universities_delete(current_user: Annotated[User, Depends(get_current_user)], delete: UniversityDelete):
+    if current_user.group != UserGroup.ADMIN:
+        raise unauthorized
+    if delete.id not in database.data["universities"]:
+        raise HTTPException(status_code=400, detail=f"University with id '{delete.id}' does not exist")
+    
+    delete_university(delete.id)
+    return { "success": True }
 
 ## rooms
 
-def delete_room(id: str, save: bool = True):
-    del database.data["rooms"][id]
-    to_delete = [id for id, time in database.data["times"] if time["room_id"] == id]
-    for id in to_delete:
-        delete_time(id, save=False)
+def delete_room(room_id: str, save: bool = True):
+    del database.data["rooms"][room_id]
+    times = database.data.get("times") or {}
+    to_delete = [time_id for time_id, time in times.items() if time["room"] == room_id]
+    for time_id in to_delete:
+        delete_time(time_id, save=False)
     if save:
       database.save()
 
@@ -262,8 +328,8 @@ async def rooms_delete(current_user: Annotated[User, Depends(get_current_user)],
 
 ## times
 
-def delete_time(id: str, save: bool = True):
-    del database.data["times"][id]
+def delete_time(time_id: str, save: bool = True):
+    del database.data["times"][time_id]
     if save:
       database.save()
 
