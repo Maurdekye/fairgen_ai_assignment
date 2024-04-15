@@ -5,7 +5,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 
-from model import Room, RoomData, RoomTimeData, Time, TimeData, University, UniversityData, User, UserData, UserGroup, UserPassword, assert_user_by_id, fetch_owned_room, fetch_owned_time, validate_room, validate_time, validate_university, validate_user
+from model import Room, RoomData, RoomTimeData, Time, TimeData, University, UniversityData, User, UserData, UserGroup, UserPassword, assert_user_by_id, delete_room, delete_time, delete_university, delete_user, fetch_owned_room, fetch_owned_time, validate_room, validate_time, validate_university, validate_user
 from authorization import get_access_token, get_current_user, hash_password
 from database import collection, database, insert
 
@@ -36,11 +36,6 @@ async def hash(hash_form: HashForm):
 # CRUD operations
 
 ## user
-
-def delete_user(id: str, save: bool = True):
-    del database.data["users"][id]
-    if save:
-      database.save()
 
 class NewUser(UserData):
     password: str
@@ -107,17 +102,6 @@ async def users_delete(current_user: Annotated[User, Depends(get_current_user)],
 
 ## universities
 
-def delete_university(university_id: str, save: bool = True):
-    del database.data["universities"][university_id]
-    rooms_to_delete = [room_id for room_id, room in collection("rooms").items() if room["university"] == university_id]
-    for room_id in rooms_to_delete:
-        delete_room(room_id, save=False)
-    users_to_delete = [user_id for user_id, user in collection("users").items() if user["university"] == university_id]
-    for user_id in users_to_delete:
-        delete_user(user_id, save=False)
-    if save:
-      database.save()
-
 @app.post("/universities/create")
 async def universities_create(current_user: Annotated[User, Depends(get_current_user)], new_university: UniversityData):
     if current_user.group != UserGroup.ADMIN:
@@ -166,14 +150,6 @@ async def universities_delete(current_user: Annotated[User, Depends(get_current_
     return { "success": True }
 
 ## rooms
-
-def delete_room(room_id: str, save: bool = True):
-    del database.data["rooms"][room_id]
-    to_delete = [time_id for time_id, time in collection("times").items() if time["room"] == room_id]
-    for time_id in to_delete:
-        delete_time(time_id, save=False)
-    if save:
-      database.save()
 
 class NewRoom(BaseModel):
     university: Optional[str] = None
@@ -256,11 +232,6 @@ async def rooms_delete(current_user: Annotated[User, Depends(get_current_user)],
     return { "success": True }
 
 ## times
-
-def delete_time(time_id: str, save: bool = True):
-    del database.data["times"][time_id]
-    if save:
-      database.save()
 
 class TimeDataWithOptionalRegistrant(RoomTimeData):
     registrant: Optional[str] = None

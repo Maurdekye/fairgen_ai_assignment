@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import HTTPException
 from pydantic import BaseModel
 
-from database import fetch, find
+from database import collection, database, fetch, find
 
 ## user
 
@@ -50,6 +50,11 @@ def validate_user(user: User):
     elif user.group == UserGroup.ADMIN and user.university is not None:
         raise HTTPException(status_code=400, detail=f"Admin users cannot be associated with a university")
 
+def delete_user(id: str, save: bool = True):
+    del database.data["users"][id]
+    if save:
+      database.save()
+
 ## university
 
 class UniversityData(BaseModel):
@@ -66,6 +71,17 @@ def validate_university(university: University):
     existing_university_same_name = find("universities", lambda u: u["name"] == university.name and u["id"] != university.id)
     if existing_university_same_name is not None:
         raise HTTPException(status_code=400, detail=f"University with name '{university.name}' already exists")
+
+def delete_university(university_id: str, save: bool = True):
+    del database.data["universities"][university_id]
+    rooms_to_delete = [room_id for room_id, room in collection("rooms").items() if room["university"] == university_id]
+    for room_id in rooms_to_delete:
+        delete_room(room_id, save=False)
+    users_to_delete = [user_id for user_id, user in collection("users").items() if user["university"] == university_id]
+    for user_id in users_to_delete:
+        delete_user(user_id, save=False)
+    if save:
+      database.save()
 
 ## room
 
@@ -89,6 +105,14 @@ def fetch_owned_room(user: User, id: str):
     if room is None or (user.group != UserGroup.ADMIN and user.university != room.get("university")):
         raise HTTPException(status_code=400, detail=f"No room with the id '{id}' found")
     return Room(**room)
+
+def delete_room(room_id: str, save: bool = True):
+    del database.data["rooms"][room_id]
+    to_delete = [time_id for time_id, time in collection("times").items() if time["room"] == room_id]
+    for time_id in to_delete:
+        delete_time(time_id, save=False)
+    if save:
+      database.save()
 
 ## time
 
@@ -130,3 +154,8 @@ def fetch_owned_time(user: User, id: str):
     if user.group != UserGroup.ADMIN and user.university != room.get("university"):
         raise nonexistent
     return time
+
+def delete_time(time_id: str, save: bool = True):
+    del database.data["times"][time_id]
+    if save:
+      database.save()
