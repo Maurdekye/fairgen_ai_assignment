@@ -30,7 +30,7 @@ def find(collection_name: str, predicate):
 def insert(collection_name: str, key: str, value: BaseModel):
     if collection_name not in database.data:
         database.data[collection_name] = {}
-    database.data[collection_name][key] = value.model_dump()
+    database.data[collection_name][key] = value.model_dump(mode='json')
     database.save()
 
 secret_key = "CHANGEME_7ca47b62f5463f69baddaeed7e528cd1b58cc121783c718a5096186a06e7b08c"
@@ -123,16 +123,53 @@ def validate_room(room: Room):
     university = fetch("universities", room.university)
     if university is None:
         raise HTTPException(status_code=400, detail=f"University with id '{room.university}' does not exist")
-    
+
+def fetch_owned_room(user: User, id: str):
+    room = fetch("rooms", id)
+    if room is None or (user.group != UserGroup.ADMIN and user.university != room.get("university")):
+        raise HTTPException(status_code=400, detail=f"No room with the id '{id}' found")
+    return Room(**room)
+
 ## time
 
 class TimeData(BaseModel):
-    room: str
     start: datetime
     end: datetime
 
-class Time(TimeData):
+class RoomTimeData(TimeData):
+    room: str
+
+class Time(RoomTimeData):
+    registrant: str
     id: str
+
+def overlaps_with(self: Time, other: Time):
+    if self.room != other.room:
+        return False
+    if self.start >= other.end:
+        return False
+    if self.end <= other.start:
+        return False
+    return True
+
+def validate_time(time: Time):
+    if time.start >= time.end:
+        raise HTTPException(status_code=400, detail=f"Start must not be later than end")
+    overlapping_time = find("times", lambda t: overlaps_with(time, Time(**t)))
+    if overlapping_time is not None:
+        overlapping_time = Time(**overlapping_time)
+        raise HTTPException(status_code=400, detail=f"Time overlaps with existing scheduled time: {overlapping_time.start} to {overlapping_time.end}")
+
+def fetch_owned_time(user: User, id: str):
+    nonexistent = HTTPException(status_code=400, detail=f"No time with the id '{id}' found")
+    time = fetch("times", id)
+    if time is None:
+        raise nonexistent
+    time = Time(**time)
+    room = fetch("rooms", time.room)
+    if user.group != UserGroup.ADMIN and user.university != room.get("university"):
+        raise nonexistent
+    return time
 
 # user authentication
 
@@ -368,9 +405,9 @@ class UniversityRoom(BaseModel):
 @app.get("/rooms/list")
 async def rooms_list(current_user: Annotated[User, Depends(get_current_user)]):
     if current_user.group == UserGroup.ADMIN:
-        return [Room(**room) for room in (database.data.get("rooms") or {}).values()]
+        return [Room(**room) for room in collection("rooms").values()]
     else:
-        return [UniversityRoom(**room) for room in (database.data.get("rooms") or {}).values() if room["university"] == current_user.university]
+        return [UniversityRoom(**room) for room in collection("rooms").values() if room["university"] == current_user.university]
 
 class RoomUpdate(BaseModel):
     id: str
@@ -383,12 +420,10 @@ async def rooms_update(current_user: Annotated[User, Depends(get_current_user)],
     if current_user.group == UserGroup.MANAGER:
         if update.data.university is not None:
             raise HTTPException(status_code=400, detail=f"You may not change the university of an existing room")
-    room = fetch("rooms", update.id)
-    if room is None or (current_user.group == UserGroup.MANAGER and current_user.university != room.get("university")):
-        raise HTTPException(status_code=400, detail=f"No room with the id '{update.id}' found")
+    room = fetch_owned_room(current_user, update.id)
     
     if update.data.university is None:
-      update.data.university = room.get("university")
+      update.data.university = room.university
     room_data = RoomData(**update.data.model_dump())
     room = Room(id=update.id, **room_data.model_dump())
     validate_room(room)
@@ -404,9 +439,7 @@ class RoomDelete(BaseModel):
 async def rooms_delete(current_user: Annotated[User, Depends(get_current_user)], delete: RoomDelete):
     if current_user.group not in [UserGroup.ADMIN, UserGroup.MANAGER]:
         raise unauthorized
-    room = fetch("rooms", delete.id)
-    if room is None or (current_user.group == UserGroup.MANAGER and current_user.university != room.get("university")):
-        raise HTTPException(status_code=400, detail=f"No room with the id '{delete.id}' found")
+    fetch_owned_room(current_user, delete.id)
     
     delete_room(delete.id)
     return { "success": True }
@@ -418,18 +451,71 @@ def delete_time(time_id: str, save: bool = True):
     if save:
       database.save()
 
-@app.post("/times/create")
-async def times_create(current_user: Annotated[User, Depends(get_current_user)], new_time: TimeData):
-    pass
+class TimeDataWithOptionalRegistrant(RoomTimeData):
+    registrant: Optional[str] = None
 
-@app.post("/times/list")
+@app.post("/times/create")
+async def times_create(current_user: Annotated[User, Depends(get_current_user)], new_time: TimeDataWithOptionalRegistrant):
+    if current_user.group not in [UserGroup.ADMIN, UserGroup.MANAGER, UserGroup.PERSONNEL]:
+        raise unauthorized
+    if current_user.group not in [UserGroup.ADMIN, UserGroup.MANAGER] and new_time.registrant is not None and new_time.registrant != current_user.id:
+        raise HTTPException(status_code=400, detail=f"You may not register a new time under a different user")
+    if new_time.registrant is None:
+        new_time.registrant = current_user.id
+    fetch_owned_room(current_user, new_time.room)
+
+    id = str(uuid4())
+    time = Time(id=id, **new_time.model_dump())
+    validate_time(time)
+    insert("times", id, time)
+    return time
+
+class ListTime(TimeData):
+    registrant: str
+    id: str
+
+@app.get("/times/list")
 async def times_list(current_user: Annotated[User, Depends(get_current_user)], room_id: str):
-    pass
+    fetch_owned_room(current_user, room_id)
+
+    return [ListTime(**time) for time in collection("times").values() if time["room"] == room_id]
+
+class TimeUpdate(BaseModel):
+    id: str
+    data: TimeDataWithOptionalRegistrant
 
 @app.post("/times/update")
-async def times_update(current_user: Annotated[User, Depends(get_current_user)], time_id: str, time_data: TimeData):
-    pass
+async def times_update(current_user: Annotated[User, Depends(get_current_user)], update: TimeUpdate):
+    if current_user.group not in [UserGroup.ADMIN, UserGroup.MANAGER, UserGroup.PERSONNEL]:
+        raise unauthorized
+    time = fetch_owned_time(current_user, update.id)
+    if current_user.group not in [UserGroup.ADMIN, UserGroup.MANAGER]:
+        if time.registrant != current_user.id:
+          raise HTTPException(status_code=400, detail=f"You may not change details of registered times you did not create")
+        if update.data.registrant is not None and update.data.registrant != current_user.id:
+          raise HTTPException(status_code=400, detail=f"You may not change the registrant of your own time")
+    
+    if update.data.registrant is None:
+        update.data.registrant = time.registrant
+    new_time = Time(id=time.id, **update.data.model_dump())
+    validate_time(new_time)
+    insert("times", time.id, new_time)
+    return new_time
+
+class TimeDelete(BaseModel):
+    id: str
 
 @app.post("/times/delete")
-async def rooms_delete(current_user: Annotated[User, Depends(get_current_user)], time_id: str):
-    pass
+async def rooms_delete(current_user: Annotated[User, Depends(get_current_user)], delete: TimeDelete):
+    if current_user.group not in [UserGroup.ADMIN, UserGroup.MANAGER, UserGroup.PERSONNEL]:
+        raise unauthorized
+    time = fetch_owned_time(current_user, delete.id)
+    if current_user.group not in [UserGroup.ADMIN, UserGroup.MANAGER] and time.registrant != current_user.id:
+        raise HTTPException(status_code=400, detail=f"You may not delete registered times you did not create")
+    
+    delete_time(time.id)
+    return { "success": True }
+
+# potential enhancements:
+# * allow deletion of a range of times between a start and end time
+# * allow variadic specification of fields to modify in `update` requests
