@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from enum import Enum
-from typing import Annotated, Union
+from typing import Annotated, Optional, Union
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -18,8 +18,19 @@ database = Database("database.json", default={
     "times": {},
 })
 
-def insert(collection: str, key: str, value: BaseModel):
-    database.data[collection][key] = value.model_dump()
+def collection(collection: str):
+    return database.data.get(collection) or {}
+
+def fetch(collection_name: str, key: str):
+    return collection(collection_name).get(key)
+
+def find(collection_name: str, predicate):
+    return next((item for item in collection(collection_name).values() if predicate(item)), None)
+
+def insert(collection_name: str, key: str, value: BaseModel):
+    if collection_name not in database.data:
+        database.data[collection_name] = {}
+    database.data[collection_name][key] = value.model_dump()
     database.save()
 
 secret_key = "CHANGEME_7ca47b62f5463f69baddaeed7e528cd1b58cc121783c718a5096186a06e7b08c"
@@ -47,7 +58,7 @@ class UserGroup(str, Enum):
 class UserData(BaseModel):
     username: str
     group: UserGroup
-    university: Union[str, None]
+    university: Optional[str]
 
 class User(UserData):
     id: str
@@ -56,7 +67,7 @@ class UserPassword(User):
     hashed_password: str
 
 def get_user_by_id(id: str):
-    user_dict = database.data["users"].get(id)
+    user_dict = fetch("users", id)
     if user_dict is not None:
         return User(**user_dict)
     
@@ -68,15 +79,16 @@ def assert_user_by_id(id: str):
 
 # potential improvement: increase the efficiency of this operation with a secondary index
 def get_user_by_name(username: str):
-    return next((u for u in database.data["users"].values() if u["username"] == username), None)
+    return find("users", lambda u: u["username"] == username)
     
 def validate_user(user: User):
-    existing_user_same_name = next((u for u in database.data["users"].values() if u["username"] == user.username and u["id"] != user.id), None)
+    existing_user_same_name = find("users", lambda u: u["username"] == user.username and u["id"] != user.id)
     if existing_user_same_name is not None:
         raise HTTPException(status_code=400, detail=f"User with name '{user.username}' already exists")
-    if user.group != UserGroup.ADMIN:
-        if not user.university in database.data["universities"]:
-            raise HTTPException(status_code=400, detail=f"Users of group '{user.group}' must be associated with a university")
+    if user.group != UserGroup.ADMIN and fetch("universities", user.university) is None:
+        raise HTTPException(status_code=400, detail=f"Users of group '{user.group}' must be associated with an existing university")
+    elif user.group == UserGroup.ADMIN and user.university is not None:
+        raise HTTPException(status_code=400, detail=f"Admin users cannot be associated with a university")
 
 ## university
 
@@ -88,10 +100,10 @@ class University(UniversityData):
 
 # potential improvement: increase the efficiency of this operation with a secondary index
 def get_university_by_name(name: str):
-    return next((u for u in database.data["universities"].values() if u["name"] == name), None)
+    return find("universities", lambda u: u["name"] == name)
 
 def validate_university(university: University):
-    existing_university_same_name = next((u for u in database.data["universities"].values() if u["name"] == university.name and u["id"] != university.id), None)
+    existing_university_same_name = find("universities", lambda u: u["name"] == university.name and u["id"] != university.id)
     if existing_university_same_name is not None:
         raise HTTPException(status_code=400, detail=f"University with name '{university.name}' already exists")
 
@@ -104,6 +116,14 @@ class RoomData(BaseModel):
 class Room(RoomData):
     id: str
 
+def validate_room(room: Room):
+    existing_room_same_name = find("rooms", lambda r: r["name"] == room.name and r["university"] == room.university and r["id"] != room.id)
+    if existing_room_same_name is not None:
+        raise HTTPException(status_code=400, detail=f"Room with name '{room.name}' already exists")
+    university = fetch("universities", room.university)
+    if university is None:
+        raise HTTPException(status_code=400, detail=f"University with id '{room.university}' does not exist")
+    
 ## time
 
 class TimeData(BaseModel):
@@ -162,6 +182,7 @@ class HashForm(BaseModel):
 
 @app.post("/hash")
 async def hash(hash_form: HashForm):
+    database.save()
     return { "hashed_password": hash_password(hash_form.password) }
 
 # CRUD operations
@@ -178,6 +199,9 @@ class NewUser(UserData):
     password_confirmation: str
 
 def create_user_from_new_user(id: str, new_user: NewUser):
+    if new_user.password != new_user.password_confirmation:
+        raise HTTPException(status_code=400, detail="Passwords do not match")
+    # no password security validation, not the focus of the project
     new_user_data = new_user.model_dump(exclude=["password", "password_confirmation"])
     user = User(id=id, **new_user_data)
     hashed_password = hash_password(new_user.password)
@@ -188,8 +212,6 @@ def create_user_from_new_user(id: str, new_user: NewUser):
 async def users_create(current_user: Annotated[User, Depends(get_current_user)], new_user: NewUser):
     if current_user.group != UserGroup.ADMIN:
         raise unauthorized
-    if new_user.password != new_user.password_confirmation:
-        raise HTTPException(status_code=400, detail="Passwords do not match")
 
     user_id = str(uuid4())
     user, database_user = create_user_from_new_user(user_id, new_user)
@@ -214,8 +236,6 @@ class UserUpdate(BaseModel):
 async def users_update(current_user: Annotated[User, Depends(get_current_user)], update: UserUpdate):
     if current_user.group != UserGroup.ADMIN:
         raise unauthorized
-    if update.user_data.password != update.user_data.password_confirmation:
-        raise HTTPException(status_code=400, detail="Passwords do not match")
     assert_user_by_id(update.id)
     
     user, database_user = create_user_from_new_user(update.id, update.user_data)
@@ -241,12 +261,10 @@ async def users_delete(current_user: Annotated[User, Depends(get_current_user)],
 
 def delete_university(university_id: str, save: bool = True):
     del database.data["universities"][university_id]
-    rooms = database.data.get("rooms") or {}
-    rooms_to_delete = [room_id for room_id, room in rooms.items() if room["university"] == university_id]
+    rooms_to_delete = [room_id for room_id, room in collection("rooms").items() if room["university"] == university_id]
     for room_id in rooms_to_delete:
         delete_room(room_id, save=False)
-    users = database.data.get("users") or {}
-    users_to_delete = [user_id for user_id, user in users.items() if user["university"] == university_id]
+    users_to_delete = [user_id for user_id, user in collection("users").items() if user["university"] == university_id]
     for user_id in users_to_delete:
         delete_user(user_id, save=False)
     if save:
@@ -303,28 +321,95 @@ async def universities_delete(current_user: Annotated[User, Depends(get_current_
 
 def delete_room(room_id: str, save: bool = True):
     del database.data["rooms"][room_id]
-    times = database.data.get("times") or {}
-    to_delete = [time_id for time_id, time in times.items() if time["room"] == room_id]
+    to_delete = [time_id for time_id, time in collection("times").items() if time["room"] == room_id]
     for time_id in to_delete:
         delete_time(time_id, save=False)
     if save:
       database.save()
 
-@app.post("/rooms/create")
-async def rooms_create(current_user: Annotated[User, Depends(get_current_user)], new_room: RoomData):
-    pass
+class NewRoom(BaseModel):
+    university: Optional[str] = None
+    name: str
 
-@app.post("/rooms/list")
+# this indirection is unfortunately necessary to allow `university`
+# to be unspecified :(
+# i'll leave it assymmetric with regards to how the other /create endpoints operate,
+# as in theory i would like to eventually find a solution that removes this indirection,
+# as opposed to introducing it to every other endpoint
+class RoomCreate(BaseModel):
+    room: NewRoom
+
+@app.post("/rooms/create")
+async def rooms_create(current_user: Annotated[User, Depends(get_current_user)], create: RoomCreate):
+    if current_user.group == UserGroup.ADMIN:
+        if create.room.university is None:
+            raise HTTPException(status_code=400, detail=f"You must specify a university to create this room in")
+    elif current_user.group == UserGroup.MANAGER:
+        if create.room.university is not None:
+            raise HTTPException(status_code=400, detail=f"You may not specify the university when creating a room")
+        else:
+            create.room.university = current_user.university 
+    else:
+        raise unauthorized
+    
+    id = str(uuid4())
+    room_data = RoomData(**create.room.model_dump())
+    room = Room(id=id, **room_data.model_dump())
+    validate_room(room)
+    insert("rooms", id, room)
+    if current_user.group != UserGroup.ADMIN:
+        room = UniversityRoom(**room.model_dump())
+    return room
+
+class UniversityRoom(BaseModel):
+    id: str
+    name: str
+
+@app.get("/rooms/list")
 async def rooms_list(current_user: Annotated[User, Depends(get_current_user)]):
-    pass
+    if current_user.group == UserGroup.ADMIN:
+        return [Room(**room) for room in (database.data.get("rooms") or {}).values()]
+    else:
+        return [UniversityRoom(**room) for room in (database.data.get("rooms") or {}).values() if room["university"] == current_user.university]
+
+class RoomUpdate(BaseModel):
+    id: str
+    data: NewRoom
 
 @app.post("/rooms/update")
-async def rooms_update(current_user: Annotated[User, Depends(get_current_user)], room_id: str, room_data: RoomData):
-    pass
+async def rooms_update(current_user: Annotated[User, Depends(get_current_user)], update: RoomUpdate):
+    if current_user.group not in [UserGroup.ADMIN, UserGroup.MANAGER]:
+        raise unauthorized
+    if current_user.group == UserGroup.MANAGER:
+        if update.data.university is not None:
+            raise HTTPException(status_code=400, detail=f"You may not change the university of an existing room")
+    room = fetch("rooms", update.id)
+    if room is None or (current_user.group == UserGroup.MANAGER and current_user.university != room.get("university")):
+        raise HTTPException(status_code=400, detail=f"No room with the id '{update.id}' found")
+    
+    if update.data.university is None:
+      update.data.university = room.get("university")
+    room_data = RoomData(**update.data.model_dump())
+    room = Room(id=update.id, **room_data.model_dump())
+    validate_room(room)
+    insert("rooms", update.id, room)
+    if current_user.group != UserGroup.ADMIN:
+        room = UniversityRoom(**room.model_dump())
+    return room
+
+class RoomDelete(BaseModel):
+    id: str
 
 @app.post("/rooms/delete")
-async def rooms_delete(current_user: Annotated[User, Depends(get_current_user)], room_id: str):
-    pass
+async def rooms_delete(current_user: Annotated[User, Depends(get_current_user)], delete: RoomDelete):
+    if current_user.group not in [UserGroup.ADMIN, UserGroup.MANAGER]:
+        raise unauthorized
+    room = fetch("rooms", delete.id)
+    if room is None or (current_user.group == UserGroup.MANAGER and current_user.university != room.get("university")):
+        raise HTTPException(status_code=400, detail=f"No room with the id '{delete.id}' found")
+    
+    delete_room(delete.id)
+    return { "success": True }
 
 ## times
 
