@@ -4,7 +4,7 @@ This is my implementation project of the requirements specified in Fairgen AI's 
 
 I've implemented the project using `fastapi`, hosted with the `uvicorn` ASGI server. It is a simple json-based REST api, with no accompanying frontend. Data storage is via a json file managed by `simplejsondb`. The app has basic user authentication via OAuth2 with JWT tokens, managed by the library `python-jose`. 
 
-#3 Installation
+## Installation
 
 First, clone the app to your local directory. 
 
@@ -34,7 +34,7 @@ docker run -p 8000:8000 -v $(pwd)/app_data/:/app/app_data/ fairgen-ai-assignment
 
 This will bind the container to port 8000, and mount the data storage directory within the app to the folder `app_data/` in your local directory. 
 
-#3 Initial Setup
+## Initial Setup
 
 One requires a user account in order to interact with most of the api. Initially, however, the database does not contain any accounts. You will have to perform a simple bootstrap process in order to create an initial admin account from which you can perform other actions.
 
@@ -116,7 +116,7 @@ Click the green "Authorize 🔓" button at the top right of the window, which sh
 
 You should now have full access to the api. Explore the various endpoints by expanding them and clicking "Try it out" to manually enter json data, and see formatted json responses.
 
-# Further notes about implementation
+## Further notes about implementation
 
 This is a fairly minimal implementation of the requirements specified, with plenty of potential improvements one could make to the system. These include:
 
