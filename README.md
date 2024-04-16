@@ -47,14 +47,16 @@ Take the password you've chosen, and send a post request to the endpoint `/hash`
 ```json
 {
   "password": "my-password"
-}```
+}
+```
 
 replacing `my-password` with the password you've chosen.
 
 Here is a sample curl command you can run:
 
 ```bash
-curl -X POST -H "Content-Type: application/json" -d '{"password":"my-password"}' http://localhost:8000/hash```
+curl -X POST -H "Content-Type: application/json" -d '{"password":"my-password"}' http://localhost:8000/hash
+```
 
 Afterwards, two things should occur:
 
@@ -63,7 +65,8 @@ Afterwards, two things should occur:
 ```json
 {
   "hashed_password": "$2b$12$2yKFVs2M1Dy7Kfl2AOVoKuVngz66Fp7yW8NOWdaybCaXTIwOkvryq"
-}```
+}
+```
 
 * You should see a new folder & file created in your working directory, at `app_data/database.json`. This is the initial empty database, and its contents should look like this:
 
@@ -82,7 +85,8 @@ Next, create the json for a default admin user from the following template:
   "group": "admin",
   "university": null,
   "hashed_password": "$2b$12$2yKFVs2M1Dy7Kfl2AOVoKuVngz66Fp7yW8NOWdaybCaXTIwOkvryq"
-}```
+}
+```
 
 Make sure you insert the hashed password returned from `/hash` into the `"hashed_password"` field. 
 
